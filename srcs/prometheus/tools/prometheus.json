@@ -1,0 +1,17 @@
+{
+    "name": "Prometheus",
+    "type": "Prometheus",
+    "url": "http://prometheus:9090",
+    "access": "proxy",
+    "database": "my_database",
+    "user": "db_user",
+    "password": "db_password",
+    "basicAuth": false,
+    "isDefault": true,
+    "jsonData": {
+      "sslmode": "disable",
+      "postgresVersion": 1200,
+      "timeInterval": "5s"
+    }
+  }
+  

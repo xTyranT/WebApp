@@ -1,0 +1,208 @@
+services:
+
+  auth_db:
+    image: auth_db
+    build: ./auth_db/
+    container_name: auth_db
+    volumes:
+      - ./auth_db/data/:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=$AUTH_DB_USER
+      - POSTGRES_PASSWORD=$AUTH_DB_PASSWORD
+      - POSTGRES_DB=$AUTH_DB_NAME
+      - PGPORT=$AUTH_DB_PORT
+    env_file:
+      - .env
+    init: true
+    expose:
+      - 5432
+    networks:
+      - Transcend-Net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $AUTH_DB_USER -d $AUTH_DB_NAME -h localhost -p $AUTH_DB_PORT"]
+      interval: 10m
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: on-failure
+
+  prof_db:
+    image: prof_db
+    build: ./prof_db/
+    container_name: prof_db
+    volumes:
+      - ./prof_db/data/:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=$PROF_DB_USER
+      - POSTGRES_PASSWORD=$PROF_DB_PASSWORD
+      - POSTGRES_DB=$PROF_DB_NAME
+      - PGPORT=$PROF_DB_PORT
+    env_file:
+      - .env
+    init: true
+    depends_on:
+      auth_db:
+        condition: service_healthy
+    expose:
+      - 4321
+    networks:
+      - Transcend-Net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $PROF_DB_USER -d $PROF_DB_NAME -h localhost -p $PROF_DB_PORT"]
+      interval: 10m
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: on-failure
+
+  authentication:
+    image: authentication
+    build: ./authentication/
+    container_name: authentication
+    expose:
+      - 7070
+    init: true
+    env_file:
+      - .env
+    volumes:
+      - ./authentication/srcs/:/files/:rw
+    networks:
+      - Transcend-Net
+    depends_on:
+      prof_db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f authentication:7070/auth/health/"]
+      interval: 10m
+      timeout: 5s
+      retries: 3
+      start_period: 2m
+    restart: on-failure
+
+  profile:
+    image: profile
+    build: ./profile/
+    container_name: profile
+    expose:
+      - 8080
+    init: true
+    env_file:
+      - .env
+    volumes:
+      - ./profile/srcs/:/files/:rw
+    networks:
+      - Transcend-Net
+    depends_on:
+      authentication:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f profile:8080/profile/health/"]
+      interval: 10m
+      timeout: 5s
+      retries: 3
+      start_period: 2m
+    restart: on-failure
+
+  nginx:
+    image: nginx
+    build: ./nginx/
+    container_name: nginx
+    env_file:
+      - .env
+    ports:
+      - 443:443
+    expose:
+      - 80
+    networks:
+      - Transcend-Net
+    depends_on:
+      profile:
+        condition: service_healthy
+    volumes:
+      - ./nginx/tools/nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./authentication/srcs/static/:/files/static/:rw
+      - ./profile/srcs/static/:/files/static/:rw
+      - ./profile/srcs/avatars/:/files/avatars/:rw
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f nginx:80/health/"]
+      interval: 10m
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: on-failure
+
+  prometheus:
+    image: prometheus
+    build: ./prometheus/
+    container_name: prometheus
+    expose:
+      - 9090
+    networks:
+      - Transcend-Net
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    depends_on:
+      nginx:
+        condition: service_healthy
+    volumes:
+      - ./prometheus/tools/prometheus.yml:/etc/prometheus/prometheus.yml
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/metrics"]
+      interval: 10m
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  postgres-exporter:
+    image: postgres-exporter
+    build: ./exporters/postgres/
+    container_name: postgres-exporter
+    ports:
+      - 9187
+    networks:
+      - Transcend-Net
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DATA_SOURCE_NAME=postgresql://$AUTH_DB_USER:$AUTH_DB_PASSWORD@$AUTH_DB_NAME:$AUTH_DB_PORT/$AUTH_DB_NAME?sslmode=disable,postgresql://$PROF_DB_USER:$PROF_DB_PASSWORD@$PROF_DB_NAME:$PROF_DB_PORT/$PROF_DB_NAME?sslmode=disable
+    init: true
+
+  grafana:
+    image: grafana
+    build: ./grafana/
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=$GRAFANA_USER
+      - GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_PASSWORD
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_PROVISIONING_ENABLED=true
+    volumes:
+      - ./grafana/tools/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml
+      - ./grafana/tools/dashboard.yml:/etc/grafana/provisioning/dashboards/dashboard.yml
+      - ./grafana/dashboards/:/var/lib/grafana/dashboards/
+    ports:
+      - 3000:3000
+    networks:
+      - Transcend-Net
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000"]
+      interval: 10m
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  Transcend-Net:
+    name: Transcend-Net
